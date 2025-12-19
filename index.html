@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>Rhythm Step & Clap Quest</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+
+<style>
+body {
+  background:#111;
+  color:#fff;
+  text-align:center;
+  font-family:sans-serif;
+}
+h2 { font-size:20px; }
+.controls { margin:10px; }
+select, button {
+  font-size:16px;
+  padding:5px 10px;
+}
+#status { font-size:18px; margin:10px; }
+.grid {
+  display:grid;
+  grid-template-columns:80px 80px;
+  gap:10px;
+  justify-content:center;
+  margin:15px;
+}
+.cell {
+  width:80px;
+  height:80px;
+  background:#333;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  font-size:22px;
+}
+.active { background:gold; color:black; }
+video { display:none; }
+</style>
+</head>
+<body>
+
+<h2>🎵 Rhythm Step & Clap</h2>
+
+<div class="controls">
+拍子：
+<select id="meter">
+  <option value="4">4拍子</option>
+  <option value="8">8拍子</option>
+</select>
+　
+テンポ：
+<select id="bpm">
+  <option value="60">60</option>
+  <option value="80" selected>80</option>
+  <option value="100">100</option>
+</select>
+</div>
+
+<div class="controls">
+クラップする拍：
+<select id="clapRule">
+  <option value="1">1拍目</option>
+  <option value="2">2拍目</option>
+  <option value="13">1＋3拍</option>
+</select>
+</div>
+
+<div class="grid">
+  <div class="cell" id="up">⬆️</div>
+  <div class="cell" id="right">➡️</div>
+  <div class="cell" id="left">⬅️</div>
+  <div class="cell" id="down">⬇️</div>
+</div>
+
+<button id="startBtn">スタート</button>
+<div id="status">待機中</div>
+
+<video id="video" playsinline></video>
+
+<script>
+// =================== 状態 ===================
+let audioCtx;
+let beat = 0;
+let lastBeatTime = 0;
+let stepSeq = [];
+let stepIndex = 0;
+let baseHip = null;
+let clapCooldown = false;
+
+// =================== UI ===================
+const status = document.getElementById("status");
+const cells = ["up","right","left","down"];
+
+// =================== メトロノーム ===================
+function playBeat(freq){
+  const o = audioCtx.createOscillator();
+  o.frequency.value = freq;
+  o.connect(audioCtx.destination);
+  o.start();
+  o.stop(audioCtx.currentTime+0.05);
+}
+
+function startMetronome(bpm, meter){
+  const interval = 60000 / bpm;
+  setInterval(()=>{
+    beat = (beat % meter) + 1;
+    lastBeatTime = performance.now();
+    playBeat(beat === 1 ? 900 : 500);
+  }, interval);
+}
+
+// =================== ステップ課題 ===================
+function makeStepSequence(){
+  stepSeq = [];
+  stepIndex = 0;
+  for(let i=0;i<4;i++){
+    stepSeq.push(cells[Math.floor(Math.random()*4)]);
+  }
+  stepSeq.forEach((d,i)=>{
+    setTimeout(()=>{
+      const c = document.getElementById(d);
+      c.classList.add("active");
+      setTimeout(()=>c.classList.remove("active"),400);
+    }, i*600);
+  });
+  console.log("STEP SEQ:",stepSeq);
+}
+
+// =================== MediaPipe Pose ===================
+const pose = new Pose({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${f}`
+});
+pose.setOptions({
+  modelComplexity:0,
+  smoothLandmarks:true
+});
+
+pose.onResults(res=>{
+  if(!res.poseLandmarks) return;
+  const hip = res.poseLandmarks[23]; // 左腰
+  if(!baseHip){ baseHip = hip; return; }
+
+  const dx = hip.x - baseHip.x;
+  const dy = hip.y - baseHip.y;
+
+  if(Math.abs(dx) > 0.05 || Math.abs(dy) > 0.05){
+    let move;
+    if(Math.abs(dx) > Math.abs(dy)){
+      move = dx > 0 ? "right":"left";
+    } else {
+      move = dy > 0 ? "down":"up";
+    }
+
+    const correct = stepSeq[stepIndex];
+    const err = performance.now() - lastBeatTime;
+
+    status.textContent =
+      (move === correct ? "🟢 ステップOK" : "🔴 ちがう方向") +
+      `｜ズレ ${Math.round(err)}ms`;
+
+    console.log({
+      step:move,
+      correct,
+      timingErrorMs:err
+    });
+
+    stepIndex++;
+    baseHip = hip;
+  }
+});
+
+// =================== カメラ ===================
+const camera = new Camera(
+  document.getElementById("video"),{
+    onFrame: async()=>{
+      await pose.send({image:video});
+    },
+    width:640, height:480
+});
+
+// =================== クラップ検出（音声） ===================
+async function initMic(){
+  const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+  const mic = audioCtx.createMediaStreamSource(stream);
+  const analyser = audioCtx.createAnalyser();
+  mic.connect(analyser);
+  const data = new Uint8Array(analyser.fftSize);
+
+  function detectClap(){
+    analyser.getByteTimeDomainData(data);
+    const vol = data.reduce((a,b)=>a+Math.abs(b-128),0);
+
+    if(vol > 2000 && !clapCooldown){
+      clapCooldown = true;
+      const rule = document.getElementById("clapRule").value;
+      const ok = rule.includes(beat.toString());
+
+      status.textContent = ok ? "👏 ナイスクラップ" : "😅 ちがう拍";
+      console.log({
+        clapBeat:beat,
+        ok,
+        clapErrorMs:performance.now()-lastBeatTime
+      });
+
+      setTimeout(()=>clapCooldown=false,300);
+    }
+    requestAnimationFrame(detectClap);
+  }
+  detectClap();
+}
+
+// =================== スタート ===================
+document.getElementById("startBtn").onclick = async ()=>{
+  audioCtx = new AudioContext();
+  await initMic();
+
+  beat = 0;
+  const bpm = Number(document.getElementById("bpm").value);
+  const meter = Number(document.getElementById("meter").value);
+
+  startMetronome(bpm, meter);
+  makeStepSequence();
+  camera.start();
+
+  status.textContent = "スタート！";
+};
+</script>
+
+</body>
+</html>
