@@ -14,11 +14,11 @@ body{
   text-align:center;
 }
 
-/* ===== カメラ表示 ===== */
+/* ===== 縦長カメラ表示 ===== */
 #cameraArea{
   position:relative;
   width:100%;
-  height:55vh;
+  height:65vh;          /* 縦長を強調 */
   overflow:hidden;
   background:#000;
 }
@@ -45,6 +45,11 @@ select, button{
 #status{
   margin-top:8px;
   font-size:18px;
+}
+#result{
+  margin-top:6px;
+  font-size:18px;
+  font-weight:bold;
 }
 .note{
   opacity:0.8;
@@ -81,7 +86,7 @@ select, button{
   </select>
 </div>
 
-<!-- カメラ表示 -->
+<!-- カメラ -->
 <div id="cameraArea">
   <video id="video" playsinline></video>
 </div>
@@ -89,8 +94,9 @@ select, button{
 <button id="startBtn">スタート</button>
 
 <div id="status">待機中</div>
+<div id="result"></div>
 <div class="note">
-  足踏みでカウントしよう<br>
+  足踏みでカウント<br>
   指定の拍で「パン！」とクラップ
 </div>
 
@@ -100,11 +106,16 @@ select, button{
 ===================== */
 let audioCtx;
 let beat = 0;
+let beatCountTotal = 0;
 let lastBeatTime = 0;
 let clapCooldown = false;
 let metroTimer = null;
 
+const MAX_BEATS = 16;          // ★ 16拍で終了
+const clapErrors = [];        // タイミング誤差（ms）
+
 const status = document.getElementById("status");
+const result = document.getElementById("result");
 
 /* =====================
    メトロノーム
@@ -123,9 +134,15 @@ function startMetronome(bpm, meter){
 
   metroTimer = setInterval(()=>{
     beat = (beat % meter) + 1;
+    beatCountTotal++;
     lastBeatTime = performance.now();
-    // 1拍目は高音
+
     playTone(beat === 1 ? 900 : 500);
+
+    // ★ 16拍で自動ストップ
+    if(beatCountTotal >= MAX_BEATS){
+      stopTask();
+    }
   }, interval);
 }
 
@@ -144,16 +161,18 @@ async function initMic(){
     analyser.getByteTimeDomainData(data);
     const vol = data.reduce((a,b)=>a+Math.abs(b-128),0);
 
-    if(vol > 2000 && !clapCooldown){
+    if(vol > 2000 && !clapCooldown && metroTimer){
       clapCooldown = true;
       const rule = document.getElementById("clapRule").value;
       const ok = rule.includes(beat.toString());
       const err = Math.round(performance.now() - lastBeatTime);
 
-      status.textContent = ok
-        ? `👏 ナイス！ (${err} ms)`
-        : `😅 ちがう拍 (${err} ms)`;
-
+      if(ok){
+        clapErrors.push(Math.abs(err));
+        status.textContent = `👏 OK (${err} ms)`;
+      }else{
+        status.textContent = `😅 ちがう拍 (${err} ms)`;
+      }
       setTimeout(()=>clapCooldown=false,300);
     }
     requestAnimationFrame(detectClap);
@@ -162,7 +181,7 @@ async function initMic(){
 }
 
 /* =====================
-   カメラ（フロント・鏡像）
+   カメラ（縦長・鏡像）
 ===================== */
 async function startCamera(){
   const video = document.getElementById("video");
@@ -175,19 +194,40 @@ async function startCamera(){
 }
 
 /* =====================
+   ストップ＆成績表示
+===================== */
+function stopTask(){
+  clearInterval(metroTimer);
+  metroTimer = null;
+
+  const avgErr = clapErrors.length
+    ? Math.round(clapErrors.reduce((a,b)=>a+b,0) / clapErrors.length)
+    : "—";
+
+  status.textContent = "終了";
+  result.textContent =
+    `平均タイミング誤差：${avgErr} ms（${clapErrors.length} 回）`;
+}
+
+/* =====================
    スタート
 ===================== */
 document.getElementById("startBtn").onclick = async ()=>{
+  // 初期化
+  clapErrors.length = 0;
+  beat = 0;
+  beatCountTotal = 0;
+  result.textContent = "";
+
   audioCtx = new AudioContext();
   await startCamera();
   await initMic();
 
-  beat = 0;
   const bpm = Number(document.getElementById("bpm").value);
   const meter = Number(document.getElementById("meter").value);
   startMetronome(bpm, meter);
 
-  status.textContent = "計測中";
+  status.textContent = "計測中（16拍）";
 };
 </script>
 
